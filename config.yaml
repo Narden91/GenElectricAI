@@ -1,0 +1,28 @@
+data_loader:
+  data_folder_path: "data/LP_Dataset_3Devices__LC1__2500pointXstate__16_11_2022/"
+  target_column: "GT"
+
+# Parameters for model training. Empty {} means default parameters will be used by the training functions.
+model_params:
+  xgboost: {}
+  catboost: {}
+  random_forest: {}
+
+calibration:
+  random_forest_method: "isotonic" # sigmoid
+
+explainer:
+  shap:
+    summary_plot_path: "models/shap_summary_plot.png"
+
+genetic_algorithm:
+  params:
+    popolazione: 100
+    generazioni: 50
+  data_input: "dati_per_ga_placeholder"
+
+bayesian_methods:
+  params:
+    alpha: 1.0
+    beta: 1.0
+  observations_input: "osservazioni_placeholder"
