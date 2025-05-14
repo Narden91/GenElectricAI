@@ -13,14 +13,9 @@ import multiprocessing
 import warnings
 warnings.filterwarnings('ignore')
 
-
 class GeneticFeatureSelector:
     def __init__(self, 
-                 X_train=None,
-                 X_test=None,
-                 y_train=None,
-                 y_test=None,
-                 data_path=None,
+                 data_path,
                  target_column='GT',
                  test_size=0.2,
                  random_state=42,
@@ -36,8 +31,7 @@ class GeneticFeatureSelector:
         Initialize the genetic feature selector.
         
         Parameters:
-        - X_train, X_test, y_train, y_test: Preprocessed data (if already available)
-        - data_path: Path to CSV file (alternative to providing preprocessed data)
+        - data_path: Path to CSV file
         - target_column: Name of the target column
         - test_size: Proportion of data for testing
         - random_state: Random seed for reproducibility
@@ -63,29 +57,12 @@ class GeneticFeatureSelector:
         self.feature_count_weight = feature_count_weight
         self.physics_correlation_weight = physics_correlation_weight
         
-        # If preprocessed data is provided, use it
-        if X_train is not None and X_test is not None and y_train is not None and y_test is not None:
-            self.X_train = X_train
-            self.X_test = X_test
-            self.y_train = y_train
-            self.y_test = y_test
-            self.feature_names = list(X_train.columns)
-            self.num_features = len(self.feature_names)
-            self.preprocessed_data_provided = True
-        else:
-            self.preprocessed_data_provided = False
-            # Load the data from file
-            if data_path is not None:
-                self.load_data()
-            else:
-                raise ValueError("Either preprocessed data (X_train, X_test, y_train, y_test) or data_path must be provided.")
-        
-        # Perform additional data preparation
-        self.prepare_data()
+        # Load the data
+        self.load_data()
         
         # Set up genetic algorithm components
         self.setup_ga()
-    
+        
     def load_data(self):
         """Load and preprocess the data."""
         # Load data
@@ -101,27 +78,8 @@ class GeneticFeatureSelector:
         
         # Split data
         self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
-            self.X, self.y, test_size=self.test_size, random_state=self.random_state, 
-            stratify=self.y if pd.api.types.is_categorical_dtype(self.y) or self.y.nunique() > 1 else None
+            self.X, self.y, test_size=self.test_size, random_state=self.random_state, stratify=self.y
         )
-        
-        print(f"Loaded dataset with {self.num_features} features and {len(self.y)} samples")
-        print(f"Target distribution: {self.y.value_counts().to_dict()}")
-    
-    def prepare_data(self):
-        """Prepare the data for feature selection."""
-        # Create complete dataframe if we only have train/test data
-        if self.preprocessed_data_provided:
-            # Combine X_train and y_train to create a dataframe that looks like the original data
-            train_df = self.X_train.copy()
-            train_df[self.target_column] = self.y_train
-            
-            test_df = self.X_test.copy()
-            test_df[self.target_column] = self.y_test
-            
-            self.df = pd.concat([train_df, test_df])
-            self.X = self.df.drop(columns=[self.target_column])
-            self.y = self.df[self.target_column]
         
         # Standardize features
         self.scaler = StandardScaler()
@@ -141,16 +99,17 @@ class GeneticFeatureSelector:
         base_model = RandomForestClassifier(random_state=self.random_state)
         base_model.fit(self.X_train_scaled, self.y_train)
         self.feature_importances = dict(zip(self.feature_names, base_model.feature_importances_))
+            
+        print(f"Loaded dataset with {self.num_features} features and {len(self.y)} samples")
+        print(f"Target distribution: {self.y.value_counts().to_dict()}")
     
     def setup_ga(self):
         """Set up the genetic algorithm components."""
         # Create fitness function (we're minimizing negative fitness)
-        try:
-            creator.create("FitnessMulti", base.Fitness, weights=(-1.0,))
-            creator.create("Individual", list, fitness=creator.FitnessMulti)
-        except RuntimeError:
-            # If types are already created, we don't need to create them again
-            pass
+        creator.create("FitnessMulti", base.Fitness, weights=(-1.0,))
+        
+        # Create Individual class
+        creator.create("Individual", list, fitness=creator.FitnessMulti)
         
         # Initialize toolbox
         self.toolbox = base.Toolbox()
@@ -173,10 +132,12 @@ class GeneticFeatureSelector:
         self.toolbox.register("mutate", tools.mutFlipBit, indpb=0.05)
         self.toolbox.register("select", tools.selTournament, tournsize=self.tournament_size)
         
-        # DO NOT create a pool here - use the default map function (sequential)
-        # This avoids the pickling error
-        self.toolbox.register("map", map)
-        print("Using sequential processing for genetic algorithm")
+        # Set up parallel evaluation
+        num_cores = multiprocessing.cpu_count()
+        if num_cores > 1:
+            pool = multiprocessing.Pool(processes=num_cores)
+            self.toolbox.register("map", pool.map)
+            print(f"Using {num_cores} CPU cores for parallel processing")
     
     def evaluate_features(self, individual):
         """
@@ -266,15 +227,13 @@ class GeneticFeatureSelector:
         
         # Run the algorithm
         print(f"Starting genetic algorithm with population size {self.population_size} for {self.generations} generations...")
-        
-        # Run the algorithm with sequential processing
         pop, log = algorithms.eaSimple(pop, self.toolbox, 
-                                   cxpb=self.crossover_prob, 
-                                   mutpb=self.mutation_prob, 
-                                   ngen=self.generations, 
-                                   stats=stats, 
-                                   halloffame=hof, 
-                                   verbose=True)
+                                       cxpb=self.crossover_prob, 
+                                       mutpb=self.mutation_prob, 
+                                       ngen=self.generations, 
+                                       stats=stats, 
+                                       halloffame=hof, 
+                                       verbose=True)
         
         # Store results
         self.best_individual = hof[0]
@@ -583,3 +542,36 @@ class GeneticFeatureSelector:
                 'f1_scores': f1_scores
             }
         }
+
+# Example usage
+if __name__ == "__main__":
+    # Replace with your actual CSV file path
+    data_path = "device1_data.csv"
+    
+    # Initialize and run the genetic feature selector
+    selector = GeneticFeatureSelector(
+        data_path=data_path,
+        target_column='GT',
+        population_size=50,
+        generations=30,
+        feature_importance_weight=0.4,
+        feature_count_weight=0.3,
+        physics_correlation_weight=0.3
+    )
+    
+    # Run the genetic algorithm
+    best_features, log = selector.run()
+    
+    # Analyze the results
+    results = selector.analyze_results()
+    
+    # Perform physics-based analysis
+    physics_analysis = selector.physics_based_analysis()
+    
+    # Find optimal feature subset
+    optimal_subset = selector.find_optimal_feature_subset()
+    
+    print("\n=== Final Selected Features ===")
+    print(f"Selected {len(best_features)} features:")
+    for i, feature in enumerate(best_features):
+        print(f"{i+1}. {feature}")
