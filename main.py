@@ -1,8 +1,9 @@
 import time
+from classifier.classifier import train_and_evaluate_model
 from data_loader import load_all_csvs_from_folder 
 from data_loader.data_loader import load_specific_csv_from_folder
 from preprocessor import preprocess_data
-from classifier import train_and_evaluate_xgboost, train_and_evaluate_catboost, train_and_evaluate_random_forest
+from classifier import train_and_evaluate_model
 from calibration import calibrate_model, get_calibrated_probabilities
 from explainer import explain_model_with_shap
 from genetic_algorithm import GeneticFeatureSelector
@@ -65,6 +66,16 @@ def main():
         
         with console.status("[bold magenta]Preprocessing dei dati...[/bold magenta]", spinner="dots"):
             X_train, X_test, y_train, y_test = preprocess_data(dataframe, target_column)
+            console.print(f"[bold yellow]DEBUG: X_train columns: {X_train.columns.tolist()}[/bold yellow]")
+            console.print(f"[bold yellow]DEBUG: X_test columns: {X_test.columns.tolist()}[/bold yellow]")
+            if target_column in X_train.columns:
+                console.print(f"[bold red]LEAKAGE ALERT: Target column '{target_column}' found in X_train![/bold red]")
+            if target_column in X_test.columns:
+                console.print(f"[bold red]LEAKAGE ALERT: Target column '{target_column}' found in X_test![/bold red]")
+        
+        correlations = X_train.corrwith(y_train.astype(float)) # Ensure y_train is numeric for corr
+        console.print("[bold yellow]DEBUG: Top correlations of features with y_train:[/bold yellow]")
+        console.print(correlations.abs().sort_values(ascending=False).head(10))
         
         console.print(Panel("[bold green]✓ Preprocessing completato[/bold green]", border_style="green"))
         if config["settings"].get("verbose", 0) > 1:
@@ -113,15 +124,27 @@ def main():
             if config["settings"].get("verbose", 0) > 0:
                 ga_selector.plot_fitness_history()
                 
-            # Filter the X_train and test based on the list of selected features
+            # Filter the X_train and test based on the selected features
             X_train = X_train[selected_features]
             X_test = X_test[selected_features] 
             console.print(Panel(f"[bold green]✓ Filtered Dataset Features[/bold green]", border_style="green"))
-            
+        
         # Train and evaluate models
-        console.print(Panel("[bold green]--- Training Model ---[/bold green]", border_style="green"))
+        console.print(Panel("[bold blue]--- Training & Evaluating Model ---[/bold blue]", border_style="blue"))
         
-        
+        model_config_yaml = config.get('model', {})
+        cv_config_yaml = config.get('cross_validation', {})
+
+        if not model_config_yaml.get('type'):
+            console.print("[bold red]ERRORE: Tipo di modello non specificato nel file di configurazione (model.type).[/bold red]", style="red")
+            exit(1)
+
+        trained_model, conf_matrix, test_accuracy, class_report_dict = train_and_evaluate_model(
+            X_train, X_test, y_train, y_test,
+            model_config_yaml,
+            cv_config_yaml,
+            console
+        )
         
     else:
         console.print(Panel(f"[bold red]Pipeline interrotto a causa di un errore nel caricamento dei dati dalla cartella '{data_folder}'.[/bold red]", 
