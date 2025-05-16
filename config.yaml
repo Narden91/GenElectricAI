@@ -1,3 +1,7 @@
+settings:
+  verbose: 0
+  feature_selection: True
+
 data_loader:
   data_folder_path: "data/LP_Dataset_3Devices__LC1__2500pointXstate__16_11_2022/"
   target_column: "GT"

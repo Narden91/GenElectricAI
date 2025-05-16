@@ -1,6 +1,7 @@
 import pandas as pd
 import os
 import glob
+from rich import print as print
 
 def load_csv(file_path):
     """Carica un file CSV in un DataFrame pandas."""

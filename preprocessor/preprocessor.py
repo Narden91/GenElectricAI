@@ -1,6 +1,7 @@
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
+
 def preprocess_data(df, target_column):
     """Esegue il preprocessing di base e la pulizia dei dati."""
     print("Avvio del preprocessing dei dati...")
