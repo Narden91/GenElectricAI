@@ -18,8 +18,8 @@ explainer:
 
 genetic_algorithm:
   params:
-    popolazione: 100
-    generazioni: 50
+    popolazione: 10
+    generazioni: 5
 
 bayesian_methods:
   params:

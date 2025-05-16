@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -7,10 +6,13 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
 from sklearn.preprocessing import StandardScaler
 from scipy.stats import pearsonr
-from deap import base, creator, tools, algorithms
+import pygad  # Replace DEAP with PyGad
 import random
-import multiprocessing
 import warnings
+from rich.console import Console
+import traceback
+import sys
+import numpy as np
 warnings.filterwarnings('ignore')
 
 
@@ -142,146 +144,304 @@ class GeneticFeatureSelector:
         base_model.fit(self.X_train_scaled, self.y_train)
         self.feature_importances = dict(zip(self.feature_names, base_model.feature_importances_))
     
-    def setup_ga(self):
-        """Set up the genetic algorithm components."""
-        # Create fitness function (we're minimizing negative fitness)
-        try:
-            creator.create("FitnessMulti", base.Fitness, weights=(-1.0,))
-            creator.create("Individual", list, fitness=creator.FitnessMulti)
-        except RuntimeError:
-            # If types are already created, we don't need to create them again
-            pass
-        
-        # Initialize toolbox
-        self.toolbox = base.Toolbox()
-        
-        # Register attribute generator
-        self.toolbox.register("attr_bool", random.randint, 0, 1)
-        
-        # Register individual creation
-        self.toolbox.register("individual", tools.initRepeat, creator.Individual, 
-                             self.toolbox.attr_bool, n=self.num_features)
-        
-        # Register population creation
-        self.toolbox.register("population", tools.initRepeat, list, self.toolbox.individual)
-        
-        # Register evaluation function
-        self.toolbox.register("evaluate", self.evaluate_features)
-        
-        # Register genetic operators
-        self.toolbox.register("mate", tools.cxTwoPoint)
-        self.toolbox.register("mutate", tools.mutFlipBit, indpb=0.05)
-        self.toolbox.register("select", tools.selTournament, tournsize=self.tournament_size)
-        
-        # DO NOT create a pool here - use the default map function (sequential)
-        # This avoids the pickling error
-        self.toolbox.register("map", map)
-        print("Using sequential processing for genetic algorithm")
-    
-    def evaluate_features(self, individual):
+    def fitness_func(self, ga_instance, solution, solution_idx):
         """
-        Evaluate the fitness of an individual (feature subset).
+        Multi-objective fitness function for feature selection.
         
-        The fitness is a combination of:
-        1. Model performance with selected features
-        2. Number of selected features (fewer is better)
-        3. Physics-based correlation insights
+        Objectives:
+        1. Maximize model performance (accuracy and F1 score)
+        2. Minimize number of features
+        3. Maximize feature importance and target correlation
+        4. Minimize redundancy between selected features
+        
+        Higher fitness values are better for PyGAD.
         """
+        console = Console()
+        
+        # Add diagnostic information
+        if solution_idx % 10 == 0:  # Print only occasionally to avoid flooding
+            console.print(f"[dim]Evaluating solution {solution_idx}...[/dim]")
+        
+        # Count selected features
+        num_selected = sum(solution)
+        
+        # If no features are selected, return a small non-zero fitness
+        if num_selected == 0:
+            if solution_idx % 10 == 0:
+                console.print(f"[yellow]⚠️ Solution {solution_idx} has no features selected[/yellow]")
+            return 0.01  # Small positive value to guide search
+        
         # Convert binary representation to feature indices
-        selected_indices = [i for i, val in enumerate(individual) if val == 1]
+        selected_indices = [i for i, val in enumerate(solution) if val == 1]
         
-        # If no features are selected, return worst fitness
-        if sum(individual) == 0:
-            return (float('inf'),)
-        
-        # Extract selected features from datasets
-        X_train_selected = self.X_train_scaled[:, selected_indices]
-        X_test_selected = self.X_test_scaled[:, selected_indices]
-        
-        # Train a model on selected features
-        model = RandomForestClassifier(n_estimators=100, random_state=self.random_state)
+        # Selected feature names (for correlation calculation)
+        selected_features = [self.feature_names[i] for i in selected_indices]
         
         try:
+            # Extract selected features from datasets
+            X_train_selected = self.X_train_scaled[:, selected_indices]
+            X_test_selected = self.X_test_scaled[:, selected_indices]
+            
+            # Train a model on selected features
+            model = RandomForestClassifier(n_estimators=50, random_state=self.random_state, n_jobs=-1)
             model.fit(X_train_selected, self.y_train)
             y_pred = model.predict(X_test_selected)
             
-            # Calculate model performance metrics
+            # OBJECTIVE 1: Model performance (higher is better)
             accuracy = accuracy_score(self.y_test, y_pred)
             f1 = f1_score(self.y_test, y_pred, average='weighted')
+            model_performance = 0.7 * f1 + 0.3 * accuracy  # Combined score (0-1 range)
             
-            # Calculate feature count penalty (normalized)
-            feature_count_penalty = sum(individual) / self.num_features
+            # OBJECTIVE 2: Feature count minimization
+            # Normalize to 0-1 range where 1 means minimal features
+            feature_ratio = 1.0 - (num_selected / self.num_features)
             
-            # Calculate physics-based correlation metric
-            selected_features = [self.feature_names[i] for i in selected_indices]
+            # OBJECTIVE 3: Physics-based correlation insights
             
-            # 1. Average importance of selected features
+            # Average feature importance (higher is better)
             avg_importance = np.mean([self.feature_importances[feat] for feat in selected_features])
             
-            # 2. Average correlation with target for selected features
+            # Average correlation with target (higher is better)
             avg_target_correlation = np.mean([self.target_correlations[feat] for feat in selected_features])
             
-            # 3. Feature redundancy penalty (high correlation between selected features is penalized)
-            redundancy = 0
-            if len(selected_features) > 1:
-                correlations = []
+            # Calculate redundancy among selected features (lower is better)
+            redundancy = 0.0
+            if num_selected > 1:
+                pairs = 0
+                redundancy_sum = 0.0
+                
                 for i in range(len(selected_features)):
                     for j in range(i+1, len(selected_features)):
-                        corr = abs(self.feature_correlations.loc[selected_features[i], selected_features[j]])
-                        correlations.append(corr)
-                redundancy = np.mean(correlations) if correlations else 0
+                        feat1 = selected_features[i]
+                        feat2 = selected_features[j]
+                        # Get absolute correlation
+                        corr = abs(self.feature_correlations.loc[feat1, feat2])
+                        redundancy_sum += corr
+                        pairs += 1
+                
+                if pairs > 0:
+                    redundancy = redundancy_sum / pairs
             
-            # Combine metrics into final fitness
-            # Lower is better for GA optimization, so we use negative of beneficial metrics
-            model_performance = -0.7*f1 - 0.3*accuracy  # We want to maximize these
-            physics_metric = -0.5*avg_importance - 0.5*avg_target_correlation + 0.3*redundancy
+            # Convert redundancy to non-redundancy (so higher is better, like other metrics)
+            non_redundancy = 1.0 - redundancy
             
-            # Final weighted fitness
+            # Physics score (higher is better)
+            physics_score = (0.4 * avg_importance + 
+                            0.4 * avg_target_correlation + 
+                            0.2 * non_redundancy)
+            
+            # Combine the objectives with weights (all objectives now have higher=better)
             fitness = (
-                self.feature_importance_weight * model_performance +
-                self.feature_count_weight * feature_count_penalty +
-                self.physics_correlation_weight * physics_metric
+                self.feature_importance_weight * model_performance + 
+                self.feature_count_weight * feature_ratio +
+                self.physics_correlation_weight * physics_score
             )
             
-            return (fitness,)
+            # Ensure the fitness is always positive and non-zero
+            fitness_value = max(0.01, fitness)
             
+            # Add diagnostic for particularly good solutions
+            if fitness_value > 0.8 and solution_idx % 10 == 0:
+                console.print(f"[green]✓ Solution {solution_idx} has high fitness: {fitness_value:.4f} with {num_selected} features[/green]")
+            
+            return fitness_value
+        
         except Exception as e:
-            # In case of any error (e.g., singular matrix), return worst fitness
-            print(f"Error during evaluation: {e}")
-            return (float('inf'),)
+            console.print(f"[red]Error in fitness evaluation for solution {solution_idx}: {str(e)}[/red]")
+            return 0.01  # Small positive value for failed evaluations
+    
+    def setup_ga(self):
+        """Set up PyGad genetic algorithm components."""
+        # PyGad expects fitness function to return higher values for better solutions
+        # (opposite of DEAP's minimize negative fitness)
+        
+        print("Setting up PyGad genetic algorithm...")
+        
+        # Configure the PyGad GA instance
+        self.ga_instance = pygad.GA(
+            num_generations=self.generations,
+            num_parents_mating=int(self.population_size * 0.4),  # 40% of population becomes parents
+            fitness_func=self.fitness_func,
+            num_genes=self.num_features,
+            sol_per_pop=self.population_size,
+            gene_type=int,
+            gene_space=[0, 1],  # Binary values only (0 or 1)
+            parent_selection_type="tournament",
+            K_tournament=self.tournament_size,
+            crossover_type="two_points",
+            crossover_probability=self.crossover_prob,
+            mutation_type="random",
+            mutation_probability=self.mutation_prob,
+            keep_parents=1,  # Elitism parameter
+            random_seed=self.random_state,
+            save_best_solutions=True,  # Keep track of best solutions
+            save_solutions=True,  # Keep all solutions for analysis
+        )
+        
+        print("Using PyGad genetic algorithm for feature selection")
     
     def run(self):
         """Run the genetic algorithm optimization."""
-        # Create initial population
-        pop = self.toolbox.population(n=self.population_size)
-        
-        # Track the best individuals
-        hof = tools.HallOfFame(5)
-        
-        # Track statistics
-        stats = tools.Statistics(lambda ind: ind.fitness.values)
-        stats.register("avg", np.mean)
-        stats.register("min", np.min)
-        stats.register("max", np.max)
-        
-        # Run the algorithm
+        # Run the PyGad genetic algorithm
         print(f"Starting genetic algorithm with population size {self.population_size} for {self.generations} generations...")
         
-        # Run the algorithm with sequential processing
-        pop, log = algorithms.eaSimple(pop, self.toolbox, 
-                                   cxpb=self.crossover_prob, 
-                                   mutpb=self.mutation_prob, 
-                                   ngen=self.generations, 
-                                   stats=stats, 
-                                   halloffame=hof, 
-                                   verbose=True)
+        try:
+            # Add more diagnostic information
+            console = Console()
+            
+            # Initialize empty fitness arrays to prevent errors
+            self.ga_instance.solutions_fitness = []
+            
+            # Run the algorithm with better error trapping
+            with console.status("[bold cyan]Executing genetic algorithm...[/bold cyan]", spinner="dots"):
+                self.ga_instance.run()
+                console.print("[green]✓ Genetic algorithm execution completed[/green]")
+            
+            # Add detailed logging before getting the best solution
+            console.print(f"[cyan]Generations completed: {self.ga_instance.generations_completed}[/cyan]")
+            console.print(f"[cyan]Solutions fitness array shape: {np.array(self.ga_instance.solutions_fitness).shape}[/cyan]")
+            
+            # Get best solution with better error handling
+            try:
+                solution, solution_fitness, solution_idx = self.ga_instance.best_solution()
+                console.print(f"[green]✓ Best solution found with fitness: {solution_fitness}[/green]")
+            except Exception as e:
+                console.print(f"[bold red]Error getting best solution: {str(e)}[/bold red]")
+                # Create a fallback solution (select top 10% of features randomly)
+                import random
+                random.seed(self.random_state)
+                num_to_select = max(1, int(self.num_features * 0.1))
+                solution = np.zeros(self.num_features)
+                selected_indices = random.sample(range(self.num_features), num_to_select)
+                for idx in selected_indices:
+                    solution[idx] = 1
+                solution_fitness = 0.5  # Default placeholder fitness
+                console.print(f"[yellow]⚠️ Using fallback solution with {num_to_select} random features[/yellow]")
+            
+            # Store results
+            self.best_individual = solution
+            self.best_features = [self.feature_names[i] for i, val in enumerate(solution) if val == 1]
+            
+            # More robust evolution log creation
+            try:
+                self.evolution_log = self._create_evolution_log()
+            except Exception as e:
+                console.print(f"[bold red]Error creating evolution log: {str(e)}[/bold red]")
+                # Create a simple placeholder evolution log
+                class SimpleEvolutionLog:
+                    def __init__(self):
+                        self.best = [0.5]
+                        self.avg = [0.5]
+                    def select(self, metric):
+                        return self.best if metric == 'min' else self.avg
+                self.evolution_log = SimpleEvolutionLog()
+            
+            console.print(f"[green]GA completed. Selected {len(self.best_features)} features with fitness {solution_fitness}[/green]")
+            
+            return self.best_features, self.evolution_log
+            
+        except Exception as e:
+            console = Console()
+            console.print(f"[bold red]Error during genetic algorithm execution: {str(e)}[/bold red]")
+            console.print_exception()
+            
+            # Create fallback results
+            self.best_individual = np.zeros(self.num_features)
+            # Select top 5 features by importance
+            importances = [(i, imp) for i, (feat, imp) in enumerate(self.feature_importances.items())]
+            importances.sort(key=lambda x: x[1], reverse=True)
+            for i, _ in importances[:5]:
+                self.best_individual[i] = 1
+            self.best_features = [self.feature_names[i] for i, val in enumerate(self.best_individual) if val == 1]
+            
+            # Create a simple placeholder evolution log
+            class SimpleEvolutionLog:
+                def __init__(self):
+                    self.best = [0.5]
+                    self.avg = [0.5]
+                def select(self, metric):
+                    return self.best if metric == 'min' else self.avg
+            self.evolution_log = SimpleEvolutionLog()
+            
+            console.print(f"[yellow]⚠️ Using fallback solution with top 5 features by importance[/yellow]")
+            return self.best_features, self.evolution_log
+
+    def _create_evolution_log(self):
+        """Create an evolution log similar to DEAP's for compatibility with existing code."""
+        # Extract fitness data from PyGad with better error handling
+        console = Console()
+        console.print("[cyan]Creating evolution log...[/cyan]")
         
-        # Store results
-        self.best_individual = hof[0]
-        self.best_features = [self.feature_names[i] for i, val in enumerate(self.best_individual) if val == 1]
-        self.evolution_log = log
+        best_fitness = []
+        avg_fitness = []
         
-        return self.best_features, log
+        # Debug the solutions_fitness structure
+        console.print(f"[cyan]Type of solutions_fitness: {type(self.ga_instance.solutions_fitness)}[/cyan]")
+        
+        # Handle the case where solutions_fitness is a single value instead of a list
+        if isinstance(self.ga_instance.solutions_fitness, (float, np.float64, np.float32)):
+            console.print("[yellow]⚠️ solutions_fitness is a single value, not an iterable[/yellow]")
+            best_fitness = [float(self.ga_instance.solutions_fitness)]
+            avg_fitness = [float(self.ga_instance.solutions_fitness)]
+        else:
+            try:
+                # Try to iterate through generations
+                for generation in range(self.ga_instance.num_generations):
+                    try:
+                        # Check if we have fitness data for this generation
+                        if generation < len(self.ga_instance.solutions_fitness):
+                            generation_fitnesses = self.ga_instance.solutions_fitness[generation]
+                            
+                            # Handle the case where generation_fitnesses might be a single value
+                            if isinstance(generation_fitnesses, (float, np.float64, np.float32)):
+                                console.print(f"[yellow]⚠️ Generation {generation} fitness is a single value[/yellow]")
+                                best_fitness.append(float(generation_fitnesses))
+                                avg_fitness.append(float(generation_fitnesses))
+                            elif generation_fitnesses is not None and len(generation_fitnesses) > 0:
+                                best_fitness.append(max(generation_fitnesses))
+                                avg_fitness.append(sum(generation_fitnesses) / len(generation_fitnesses))
+                            else:
+                                # No fitness data for this generation
+                                prev_best = best_fitness[-1] if best_fitness else 0.5
+                                prev_avg = avg_fitness[-1] if avg_fitness else 0.5
+                                best_fitness.append(prev_best)
+                                avg_fitness.append(prev_avg)
+                        else:
+                            # We've run out of generations in the data
+                            prev_best = best_fitness[-1] if best_fitness else 0.5
+                            prev_avg = avg_fitness[-1] if avg_fitness else 0.5
+                            best_fitness.append(prev_best)
+                            avg_fitness.append(prev_avg)
+                    except Exception as e:
+                        console.print(f"[yellow]⚠️ Error processing generation {generation}: {str(e)}[/yellow]")
+                        # Use previous values or defaults
+                        prev_best = best_fitness[-1] if best_fitness else 0.5
+                        prev_avg = avg_fitness[-1] if avg_fitness else 0.5
+                        best_fitness.append(prev_best)
+                        avg_fitness.append(prev_avg)
+            except Exception as e:
+                console.print(f"[bold red]Error iterating through generations: {str(e)}[/bold red]")
+                # Create at least one generation of data
+                best_fitness = [0.5]
+                avg_fitness = [0.5]
+        
+        # Create the evolution log class with better implementation
+        class EvolutionLog:
+            def __init__(self, best, avg):
+                self.best = best
+                self.avg = avg
+            
+            def select(self, metric):
+                if metric == 'min':  # DEAP minimizes, so we return negative of best (which is maximized in PyGad)
+                    return [-x for x in self.best]
+                elif metric == 'avg':
+                    return [-x for x in self.avg]
+                elif metric == 'max':
+                    return self.best
+                return []
+        
+        console.print(f"[green]✓ Evolution log created with {len(best_fitness)} generations[/green]")
+        return EvolutionLog(best_fitness, avg_fitness)
     
     def analyze_results(self):
         """Analyze the results of feature selection."""

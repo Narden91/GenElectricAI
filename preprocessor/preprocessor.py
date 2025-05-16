@@ -5,7 +5,9 @@ def preprocess_data(df, target_column):
     """Esegue il preprocessing di base e la pulizia dei dati."""
     print("Avvio del preprocessing dei dati...")
     df_cleaned = df.dropna()
-    print(f"Numero di righe dopo la rimozione dei NaN: {len(df_cleaned)}")
+    
+    if len(df_cleaned != len(df)):
+        print(f"Righe rimosse a causa di NaN: {len(df) - len(df_cleaned)}")
 
     X = df_cleaned.drop(columns=[target_column])
     y = df_cleaned[target_column]

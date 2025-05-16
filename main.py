@@ -1,3 +1,4 @@
+import time
 from data_loader import load_all_csvs_from_folder 
 from data_loader.data_loader import load_specific_csv_from_folder
 from preprocessor import preprocess_data
@@ -75,17 +76,82 @@ def main():
         except Exception as e:
             console.print(f"[yellow]⚠️ Attenzione: non è stato possibile convertire y_train/y_test in interi: [/yellow][dim]{e}[/dim]")
 
+        # GENETIC ALGORITHM FEATURE SELECTION
+        console.print(Panel("[bold cyan]--- Inizio Selezione Genetica delle Feature ---[/bold cyan]", border_style="cyan"))
         
-        # print("\n--- Genetic Feature Selection ---")
-        # ga_params = config.get('genetic_algorithm', {}).get('params', {})
-        # ga_selector = GeneticFeatureSelector(
-        #     X_train=X_train, 
-        #     X_test=X_test,
-        #     y_train=y_train,
-        #     y_test=y_test,
-        #     population_size=ga_params.get('popolazione', 50),
-        #     generations=ga_params.get('generazioni', 30)
-        # )
+        # Get GA parameters from config
+        ga_params = config.get('genetic_algorithm', {}).get('params', {})
+        
+        # Initialize the genetic algorithm with parameters
+        with console.status("[bold cyan]Inizializzazione del GA...[/bold cyan]", spinner="dots"):
+            ga_selector = GeneticFeatureSelector(
+                X_train=X_train, 
+                X_test=X_test,
+                y_train=y_train,
+                y_test=y_test,
+                population_size=ga_params.get('popolazione', 50),
+                generations=ga_params.get('generazioni', 30),
+                crossover_prob=ga_params.get('crossover_prob', 0.7),
+                mutation_prob=ga_params.get('mutation_prob', 0.2),
+                feature_importance_weight=ga_params.get('feature_importance_weight', 0.4),
+                feature_count_weight=ga_params.get('feature_count_weight', 0.3),
+                physics_correlation_weight=ga_params.get('physics_correlation_weight', 0.3)
+            )
+        
+        try:
+            # Run the genetic algorithm
+            start_time = time.time()
+            with console.status("[bold cyan]Esecuzione dell'algoritmo genetico in corso...[/bold cyan]", spinner="dots"):
+                best_features, log = ga_selector.run()
+            end_time = time.time()
+            
+            console.print(f"[green]✓ Algoritmo genetico completato in [bold]{end_time - start_time:.2f}[/bold] secondi[/green]")
+            console.print(f"[green]Selezionate [bold]{len(best_features)}[/bold] feature su [bold]{X_train.shape[1]}[/bold] ({len(best_features)/X_train.shape[1]:.1%})[/green]")
+            
+            # Display selected features
+            if len(best_features) <= 10:
+                console.print(f"[yellow]Feature selezionate: [bold]{', '.join(best_features)}[/bold][/yellow]")
+            else:
+                console.print(f"[yellow]Prime 10 feature selezionate: [bold]{', '.join(best_features[:10])}[/bold]...[/yellow]")
+            
+            # Analyze results
+            console.print(Panel("[bold cyan]Analisi dei risultati della selezione delle feature...[/bold cyan]", border_style="cyan"))
+            with console.status("[bold cyan]Analisi in corso...[/bold cyan]", spinner="dots"):
+                results = ga_selector.analyze_results()
+            console.print("[green]✓ Analisi completata. Grafici salvati in: feature_importance.png, feature_correlation.png, fitness_evolution.png[/green]")
+            
+            # Physics-based analysis
+            console.print(Panel("[bold cyan]Analisi fisica delle feature selezionate...[/bold cyan]", border_style="cyan"))
+            with console.status("[bold cyan]Analisi fisica in corso...[/bold cyan]", spinner="dots"):
+                physics_results = ga_selector.physics_based_analysis()
+            console.print("[green]✓ Analisi fisica completata. Grafici salvati in: boxplot_*.png, feature_state_differentiation.png[/green]")
+            
+            # Find optimal feature subset
+            console.print(Panel("[bold cyan]Ricerca del sottogruppo ottimale di feature...[/bold cyan]", border_style="cyan"))
+            with console.status("[bold cyan]Ottimizzazione in corso...[/bold cyan]", spinner="dots"):
+                optimal_subset = ga_selector.find_optimal_feature_subset()
+            
+            # Display optimal feature subset
+            console.print(f"[green]Numero ottimale di feature: [bold]{optimal_subset['optimal_feature_count']}[/bold][/green]")
+            if len(optimal_subset['optimal_features']) <= 10:
+                console.print(f"[yellow]Feature ottimali: [bold]{', '.join(optimal_subset['optimal_features'])}[/bold][/yellow]")
+            else:
+                console.print(f"[yellow]Prime 10 feature ottimali: [bold]{', '.join(optimal_subset['optimal_features'][:10])}[/bold]...[/yellow]")
+            
+            console.print("[green]✓ Grafico salvato in: performance_vs_features.png[/green]")
+            
+            # Use the optimal features for subsequent modeling
+            X_train_selected = X_train[optimal_subset['optimal_features']]
+            X_test_selected = X_test[optimal_subset['optimal_features']]
+            
+            console.print(Panel("[bold green]--- Fine Selezione Genetica delle Feature ---[/bold green]", border_style="green"))
+            console.print(f"[cyan]Utilizzo delle [bold]{len(optimal_subset['optimal_features'])}/{X_train.shape[1]}[/bold] feature ottimali per i modelli successivi[/cyan]")
+            
+        except Exception as e:
+            console.print(f"[bold red]ERRORE:[/bold red] Durante la selezione genetica delle feature: {e}", style="red")
+            console.print("[yellow]⚠️ Continuazione con tutte le feature originali...[/yellow]")
+            X_train_selected = X_train
+            X_test_selected = X_test
         
         # best_features, log = ga_selector.run()
         # results = ga_selector.analyze_results()
