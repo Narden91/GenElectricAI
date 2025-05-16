@@ -5,7 +5,7 @@ settings:
 data_loader:
   data_folder_path: "data/LP_Dataset_3Devices__LC1__2500pointXstate__16_11_2022/"
   target_column: "GT"
-  specific_file: "Desk_Lamp__values.csv" # Set to null or remove to load all CSVs
+  specific_file: "Fan_Heater__values.csv" # Desk_Lamp__values.csv 
 
 genetic_algorithm:
   params:
@@ -18,12 +18,20 @@ genetic_algorithm:
     # correlation_weight: 0.2 # Optional, defaults in GA class
 
 model:
-  type: RandomForest # Options: RandomForest, XGBoost, CatBoost
-  global_random_state: 42 # Default random state for models if not set in specific params
+  type: LogisticRegression  # Options: RandomForest, XGBoost, CatBoost, LogisticRegression
+  global_random_state: 42
+
+  LogisticRegression_params:
+    C: 1.0
+    solver: 'lbfgs'  # For multiclass problems
+    multi_class: 'multinomial'  # For multiclass problems
+    max_iter: 1000
+    # penalty: 'l2'  # default
+    # class_weight: 'balanced'  # Optional for imbalanced classes
 
   RandomForest_params:
     n_estimators: 100
-    # max_depth: null # null means no limit or use scikit-learn default
+    max_depth: 5 # null means no limit or use scikit-learn default
     # min_samples_split: 2
     # min_samples_leaf: 1
     # random_state: 42 # Overrides global_random_state

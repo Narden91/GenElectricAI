@@ -1,22 +1,19 @@
 import time
-from classifier.classifier import train_and_evaluate_model
-from data_loader import load_all_csvs_from_folder 
-from data_loader.data_loader import load_specific_csv_from_folder
-from preprocessor import preprocess_data
-from classifier import train_and_evaluate_model
-from calibration import calibrate_model, get_calibrated_probabilities
-from explainer import explain_model_with_shap
-from genetic_algorithm import GeneticFeatureSelector
-
 import pandas as pd
 import yaml
 import os
 import warnings
 from rich.console import Console
 from rich.panel import Panel
-from rich.text import Text
-from rich import print as print
-from rich.progress import track
+from rich import print
+
+# Import modules
+from data_loader import load_all_csvs_from_folder, load_specific_csv_from_folder
+from preprocessor import preprocess_data
+from classifier import train_and_evaluate_model
+from calibration import calibrate_model, get_calibrated_probabilities
+from explainer import explain_model_with_shap
+from genetic_algorithm import GeneticFeatureSelector
 
 
 # Create a console instance
@@ -24,7 +21,7 @@ console = Console()
 
 
 def main():
-    console.print(Panel.fit("[bold blue]Avvio del pipeline di classificazione multiclasse...[/bold blue]", 
+    console.print(Panel.fit("[bold blue]Starting multiclass classification pipeline...[/bold blue]", 
                            border_style="blue"))
 
     # Load configuration from YAML file
@@ -32,78 +29,75 @@ def main():
     try:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        console.print(f"[green]✓ Configurazione caricata correttamente da [bold]{config_path}[/bold][/green]")
+        console.print(f"[green]✓ Configuration loaded from [bold]{config_path}[/bold][/green]")
     except FileNotFoundError:
-        console.print(f"[bold red]ERRORE:[/bold red] File di configurazione '[bold]{config_path}[/bold]' non trovato. Assicurarsi che esista.", style="red")
+        console.print(f"[bold red]ERROR:[/bold red] Configuration file '[bold]{config_path}[/bold]' not found.", style="red")
         exit(1)
     except yaml.YAMLError as e:
-        console.print(f"[bold red]ERRORE:[/bold red] nel parsing del file YAML '[bold]{config_path}[/bold]': {e}", style="red")
+        console.print(f"[bold red]ERROR:[/bold red] YAML parsing error in '[bold]{config_path}[/bold]': {e}", style="red")
         exit(1)
     except Exception as e:
-        console.print(f"[bold red]ERRORE:[/bold red] sconosciuto durante il caricamento della configurazione '[bold]{config_path}[/bold]': {e}", style="red")
+        console.print(f"[bold red]ERROR:[/bold red] Unknown error loading '[bold]{config_path}[/bold]': {e}", style="red")
         exit(1)
     
-    # 1. Caricamento Dati
+    # 1. Load Data
     data_folder = config['data_loader']['data_folder_path']
     specific_file = config['data_loader'].get('specific_file')
 
-    console.print(Panel(f"[yellow]📂 Caricamento dati da: [bold]{data_folder}[/bold][/yellow]", 
+    console.print(Panel(f"[yellow]📂 Loading data from: [bold]{data_folder}[/bold][/yellow]", 
                        border_style="yellow"))
     
     if specific_file:
-        console.print(f"[yellow]File specifico: [bold]{specific_file}[/bold][/yellow]")
+        console.print(f"[yellow]Specific file: [bold]{specific_file}[/bold][/yellow]")
         dataframe = load_specific_csv_from_folder(data_folder, specific_file)
     else:
-        console.print(f"[yellow]Caricamento di tutti i file CSV dalla cartella[/yellow]")
+        console.print(f"[yellow]Loading all CSV files from folder[/yellow]")
         dataframe = load_all_csvs_from_folder(data_folder)
 
     if dataframe is not None:
-        console.print(Panel(f"[bold green]✓ Dati caricati: [/bold green][cyan]{len(dataframe)} righe, {len(dataframe.columns)} colonne[/cyan]"))
+        console.print(f"[green]✓ Data loaded: [/green][cyan]{len(dataframe)} rows, {len(dataframe.columns)} columns[/cyan]")
         
-        console.print(Panel("[bold magenta]--- Inizio Preprocessing ---[/bold magenta]", border_style="magenta"))
+        # 2. Preprocess Data
+        console.print(Panel("[bold magenta]--- Starting Preprocessing ---[/bold magenta]", border_style="magenta"))
         target_column = config['data_loader']['target_column'] 
         console.print(f"[magenta]Target column: [bold]{target_column}[/bold][/magenta]")
         
-        with console.status("[bold magenta]Preprocessing dei dati...[/bold magenta]", spinner="dots"):
-            X_train, X_test, y_train, y_test = preprocess_data(dataframe, target_column)
-            console.print(f"[bold yellow]DEBUG: X_train columns: {X_train.columns.tolist()}[/bold yellow]")
-            console.print(f"[bold yellow]DEBUG: X_test columns: {X_test.columns.tolist()}[/bold yellow]")
+        with console.status("[bold magenta]Preprocessing data...[/bold magenta]", spinner="dots"):
+            X_train, X_test, y_train, y_test = preprocess_data(dataframe, target_column, verbose=config["settings"].get("verbose", 0))
+            
+            # Check for data leakage - keep this important check
             if target_column in X_train.columns:
                 console.print(f"[bold red]LEAKAGE ALERT: Target column '{target_column}' found in X_train![/bold red]")
             if target_column in X_test.columns:
                 console.print(f"[bold red]LEAKAGE ALERT: Target column '{target_column}' found in X_test![/bold red]")
         
-        correlations = X_train.corrwith(y_train.astype(float)) # Ensure y_train is numeric for corr
-        console.print("[bold yellow]DEBUG: Top correlations of features with y_train:[/bold yellow]")
-        console.print(correlations.abs().sort_values(ascending=False).head(10))
+        # Show only important correlations if verbose
+        if config["settings"].get("verbose", 0) > 0:
+            correlations = X_train.corrwith(y_train.astype(float))
+            console.print("[yellow]Top correlations with target:[/yellow]")
+            console.print(correlations.abs().sort_values(ascending=False).head(5))
         
-        console.print(Panel("[bold green]✓ Preprocessing completato[/bold green]", border_style="green"))
-        if config["settings"].get("verbose", 0) > 1:
-            console.print(f"[green]X_train:\n {X_train.head()}[/green]")
-            console.print(f"[green]y_train:\n {y_train.head()}[/green]")
-            console.print(f"[green]X_test:\n {X_test.head()}[/green]")
-            console.print(f"[green]y_test:\n {y_test.head()}[/green]")
+        console.print("[green]✓ Preprocessing completed[/green]")
 
+        # Convert target to int if possible
         try:
             y_train = y_train.astype(int)
             y_test = y_test.astype(int)
-            console.print("[green]✓ Target convertiti in formato intero[/green]")
         except Exception as e:
-            console.print(f"[yellow]⚠️ Attenzione: non è stato possibile convertire y_train/y_test in interi: [/yellow][dim]{e}[/dim]")
+            console.print(f"[yellow]⚠️ Warning: Unable to convert target to integer format[/yellow]")
 
+        # 3. Feature Selection
         if config["settings"].get("feature_selection", True):
-            console.print(Panel("[bold yellow]--- Feature Selection with GA Enabled ---[/bold yellow]", border_style="yellow"))
+            console.print(Panel("[bold yellow]--- Feature Selection with GA ---[/bold yellow]", border_style="yellow"))
             
             # Get GA parameters from config
             ga_params = config.get('genetic_algorithm', {}).get('params', {})
             
-            # Initialize the genetic algorithm with parameters
-            with console.status("[bold cyan]Inizializzazione del GA...[/bold cyan]", spinner="dots"):
+            # Initialize and run GA
+            with console.status("[bold cyan]Running genetic algorithm...[/bold cyan]", spinner="dots"):
                 ga_selector = GeneticFeatureSelector(
                     X_train=X_train, 
-                    X_test=X_test,
                     y_train=y_train,
-                    y_test=y_test,
                     population_size=ga_params.get('popolazione', 50),
                     generations=ga_params.get('generazioni', 30),
                     crossover_prob=ga_params.get('crossover_prob', 0.7),
@@ -112,31 +106,25 @@ def main():
                     feature_count_weight=ga_params.get('feature_count_weight', 0.2),
                     correlation_weight=ga_params.get('correlation_weight', 0.2)
                 )
-
-                console.print(Panel("[bold green]✓ GA inizializzato correttamente[/bold green]", border_style="green"))
-            
-            # Run the genetic algorithm
-            with console.status("[bold cyan]Esecuzione del GA...[/bold cyan]", spinner="dots"):
+                
                 selected_features = ga_selector.run()
-                console.print(Panel(f"[bold green]✓ Esecuzione del GA completata con successo![/bold green]", border_style="green"))
-                console.print(f"[cyan]Feature selezionate: {len(selected_features)}[/cyan]")
+                console.print(f"[green]✓ GA completed: [cyan]{len(selected_features)} features selected[/cyan][/green]")
             
             if config["settings"].get("verbose", 0) > 0:
                 ga_selector.plot_fitness_history()
                 
-            # Filter the X_train and test based on the selected features
+            # Filter features
             X_train = X_train[selected_features]
             X_test = X_test[selected_features] 
-            console.print(Panel(f"[bold green]✓ Filtered Dataset Features[/bold green]", border_style="green"))
         
-        # Train and evaluate models
+        # 4. Train and evaluate models
         console.print(Panel("[bold blue]--- Training & Evaluating Model ---[/bold blue]", border_style="blue"))
         
         model_config_yaml = config.get('model', {})
         cv_config_yaml = config.get('cross_validation', {})
 
         if not model_config_yaml.get('type'):
-            console.print("[bold red]ERRORE: Tipo di modello non specificato nel file di configurazione (model.type).[/bold red]", style="red")
+            console.print("[bold red]ERROR: Model type not specified in configuration (model.type).[/bold red]", style="red")
             exit(1)
 
         trained_model, conf_matrix, test_accuracy, class_report_dict = train_and_evaluate_model(
@@ -146,11 +134,20 @@ def main():
             console
         )
         
+        # Show feature importances if available
+        if trained_model and hasattr(trained_model, 'feature_importances_'):
+            importances = pd.DataFrame({
+                'feature': X_train.columns,
+                'importance': trained_model.feature_importances_
+            }).sort_values('importance', ascending=False)
+            console.print("[yellow]Top feature importances:[/yellow]")
+            console.print(importances.head(5))
+        
     else:
-        console.print(Panel(f"[bold red]Pipeline interrotto a causa di un errore nel caricamento dei dati dalla cartella '{data_folder}'.[/bold red]", 
+        console.print(Panel(f"[bold red]Pipeline aborted due to error loading data from '{data_folder}'.[/bold red]", 
                             border_style="red"))
 
-    console.print(Panel("[bold blue]Pipeline di classificazione multiclasse completato.[/bold blue]", border_style="blue"))
+    console.print(Panel("[bold blue]Multiclass classification pipeline completed.[/bold blue]", border_style="blue"))
 
 
 if __name__ == "__main__":
@@ -158,7 +155,7 @@ if __name__ == "__main__":
     
     # Check if the config file exists
     if not os.path.exists('config.yaml'):
-        console.print("[bold red]ERRORE:[/bold red] Il file di configurazione 'config.yaml' non esiste.", style="red")
+        console.print("[bold red]ERROR:[/bold red] Configuration file 'config.yaml' does not exist.", style="red")
         exit(1)
     
     main()

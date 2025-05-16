@@ -5,6 +5,7 @@ from sklearn.metrics import accuracy_score
 import random
 from rich import print as print
 import matplotlib.pyplot as plt
+from sklearn.model_selection import cross_val_score
 
 
 class GeneticFeatureSelector:
@@ -17,9 +18,7 @@ class GeneticFeatureSelector:
     """
     def __init__(self,
                  X_train: pd.DataFrame,
-                 X_test: pd.DataFrame,
                  y_train: pd.Series,
-                 y_test: pd.Series,
                  population_size: int = 50,
                  generations: int = 30,
                  crossover_prob: float = 0.7,
@@ -29,9 +28,7 @@ class GeneticFeatureSelector:
                  correlation_weight: float = 0.2,
                  random_state: int = None):
         self.X_train = X_train.reset_index(drop=True)
-        self.X_test = X_test.reset_index(drop=True)
         self.y_train = y_train.reset_index(drop=True)
-        self.y_test = y_test.reset_index(drop=True)
         self.n_features = X_train.shape[1]
         self.population_size = population_size
         self.generations = generations
@@ -61,17 +58,16 @@ class GeneticFeatureSelector:
         # Subset data
         selected_idx = np.where(individual == 1)[0]
         X_tr = self.X_train.iloc[:, selected_idx]
-        X_te = self.X_test.iloc[:, selected_idx]
 
         # 1. Accuracy term: train fast classifier
         clf = LogisticRegression(solver='liblinear', max_iter=200)
+        # Use cross-validation on training data only
+        cv_score = 0
         try:
-            clf.fit(X_tr, self.y_train)
-            preds = clf.predict(X_te)
-            acc = accuracy_score(self.y_test, preds)
+            cv_score = np.mean(cross_val_score(clf, X_tr, self.y_train, cv=5))
         except Exception:
             # In case of singular matrix or other issues
-            acc = 0.0
+            cv_score = 0.0
 
         # 2. Feature count term: ratio of selected features
         feat_ratio = individual.sum() / self.n_features
@@ -90,7 +86,7 @@ class GeneticFeatureSelector:
 
         # Fitness: weighted sum (higher is better)
         fitness = (
-            self.accuracy_weight * acc
+            self.accuracy_weight * cv_score
             - self.feature_count_weight * feat_ratio
             - self.correlation_weight * corr_term
         )
