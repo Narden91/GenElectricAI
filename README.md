@@ -81,7 +81,7 @@ Ciascun modulo nella struttura (es. `data_loader`, `preprocessor`, ecc.) è un p
 
 Consultare il codice sorgente all'interno di ciascun modulo e il file `main.py` per i dettagli di implementazione e di interazione tra i moduli.
 
-## TODO / Prossimi Passi (Esempio)
+## TODO / Prossimi Passi
 
 -   Espandere le funzionalità dei moduli `genetic_algorithm` e `bayesian_methods` con logiche più complesse.
 -   Implementare la logica per salvare e caricare i modelli addestrati nella cartella `models/`.
